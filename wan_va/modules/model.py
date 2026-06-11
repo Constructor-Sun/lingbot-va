@@ -591,7 +591,8 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin):
                              'action_norm3',
                              'text_norm3'
                              ]
-    _keys_to_ignore_on_load_unexpected = ["norm_added_q"]
+    _keys_to_ignore_on_load_unexpected = ["norm_added_q", "object_pred_head"]
+    _keys_to_ignore_on_load_missing = ["object_pred_head"]
     _repeated_blocks = ["WanTransformerBlock"]
 
     @register_to_config
@@ -610,7 +611,8 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin):
                  eps=1e-06,
                  rope_max_seq_len=1024,
                  pos_embed_seq_len=None,
-                 attn_mode="torch"):
+                 attn_mode="torch",
+                 enable_object_pred=False):
         r"""
         TODO
         """
@@ -649,6 +651,15 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin):
         self.action_proj_out = nn.Linear(inner_dim, action_dim)
         self.scale_shift_table = nn.Parameter(
             torch.randn(1, 2, inner_dim) / inner_dim**0.5)
+
+        # This auxiliary head is only used for object-pred training.
+        self.object_pred_head = None
+        if enable_object_pred:
+            self.object_pred_head = nn.Sequential(
+                nn.Linear(inner_dim * 2, inner_dim),
+                nn.SiLU(),
+                nn.Linear(inner_dim, inner_dim),
+            )
 
     def clear_cache(self, cache_name):
         for block in self.blocks:
@@ -698,6 +709,119 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin):
             latent_time_steps, dtype=dtype)
         timestep_proj = timestep_proj.unflatten(2, (6, -1))  # B L 6 C
         return temb, timestep_proj
+
+    def _align_mask_to_token_grid(
+        self,
+        mask,
+        target_frames,
+        target_h,
+        target_w,
+        temporal_ratio=4,
+    ):
+        if mask is None:
+            raise ValueError(
+                "enable_object_pred=True requires dataset masks, but this batch has mask=None."
+            )
+
+        if mask.dim() == 4:
+            mask = mask.unsqueeze(1)
+        elif mask.dim() != 5:
+            raise ValueError(f"Expected mask with 4 or 5 dims, got shape {tuple(mask.shape)}")
+
+        mask = mask.float()
+
+        if mask.shape[2] != target_frames:
+            source_frames = mask.shape[2]
+            expected_frames = (source_frames - 1) // temporal_ratio + 1
+            if target_frames != expected_frames:
+                raise ValueError(
+                    "Mask temporal shape does not match VAE temporal compression rule: "
+                    f"source_frames={source_frames}, target_frames={target_frames}, "
+                    f"expected_target={expected_frames}, temporal_ratio={temporal_ratio}"
+                )
+            mask = self._compress_mask_temporal_like_wan_vae(
+                mask,
+                target_frames=target_frames,
+                temporal_ratio=temporal_ratio,
+            )
+
+        if mask.shape[3] != target_h or mask.shape[4] != target_w:
+            raise ValueError(
+                "Mask spatial shape does not match latent token grid: "
+                f"mask={tuple(mask.shape)}, target=(*, *, {target_frames}, {target_h}, {target_w})"
+            )
+
+        return mask
+
+    def _compress_mask_temporal_like_wan_vae(self, mask, target_frames, temporal_ratio):
+        # Wan VAE encodes frame 0 alone, then encodes complete 4-frame chunks:
+        # [0], [1..4], [5..8], ...
+        if target_frames == 1:
+            return mask[:, :, :1]
+
+        first = mask[:, :, :1]
+        usable_rest_frames = (target_frames - 1) * temporal_ratio
+        rest = mask[:, :, 1:1 + usable_rest_frames]
+        b, c, _, h, w = rest.shape
+        rest = rest.reshape(
+            b,
+            c,
+            target_frames - 1,
+            temporal_ratio,
+            h,
+            w,
+        ).amax(dim=3)
+        return torch.cat([first, rest], dim=2)
+
+    def _compute_object_pred(
+        self,
+        latent_feat,
+        action_feat,
+        mask,
+        latent_shape,
+        batch_size,
+        obj_k,
+        temporal_ratio=4,
+    ):
+        _, _, latent_frames, latent_h, latent_w = latent_shape
+        patch_f, patch_h, patch_w = self.patch_size
+        frame_tokens = latent_frames // patch_f
+        h_tokens = latent_h // patch_h
+        w_tokens = latent_w // patch_w
+        inner_dim = latent_feat.shape[-1]
+        feature_dtype = latent_feat.dtype
+        lf = latent_feat.reshape(batch_size, frame_tokens, h_tokens, w_tokens, inner_dim)
+        mask = self._align_mask_to_token_grid(
+            mask,
+            target_frames=frame_tokens,
+            target_h=h_tokens,
+            target_w=w_tokens,
+            temporal_ratio=temporal_ratio,
+        )
+        mask_b = mask.squeeze(1).to(dtype=feature_dtype)
+
+        if frame_tokens <= obj_k or mask_b.shape[1] <= obj_k:
+            return None, None
+
+        m0 = mask_b[:, 0]
+        h_first = (lf[:, 0] * m0.unsqueeze(-1)).sum(dim=[1, 2]) / (m0.sum(dim=[1, 2]) + 1e-6)
+
+        m_k = mask_b[:, obj_k]
+        h_last = (lf[:, obj_k] * m_k.unsqueeze(-1)).sum(dim=[1, 2]) / (m_k.sum(dim=[1, 2]) + 1e-6)
+        h_last = h_last.detach()
+
+        action_num_frames = mask_b.shape[1]
+        action_steps_per_frame = action_feat.shape[1] // (batch_size * action_num_frames)
+        af = action_feat.reshape(batch_size, action_num_frames, action_steps_per_frame, inner_dim)
+        a_window = af[:, 1:obj_k + 1]
+        a_pooled = a_window.reshape(batch_size, -1, inner_dim).mean(dim=1)
+
+        if self.object_pred_head is None:
+            raise RuntimeError(
+                "enable_object_pred=True but object_pred_head is not initialized."
+            )
+        h_pred = self.object_pred_head(torch.cat([h_first, a_pooled], dim=-1))
+        return h_pred, h_last
 
     def forward_train(self, input_dict):
         input_dict['latent_dict']['noisy_latents'] = input_dict['latent_dict']['noisy_latents'].to(torch.bfloat16)
@@ -786,6 +910,11 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin):
                                 (1. + scale) +
                                 shift).type_as(hidden_states)
         latent_hidden_states, _, action_hidden_states, _, _ = torch.split(hidden_states, split_list, dim=1)
+
+        # Save token-level features before proj_out for Object Future Prediction
+        latent_feat = latent_hidden_states.clone()   # [1, B*F*H_tok*W_tok, inner_dim]
+        action_feat = action_hidden_states.clone()   # [1, B*F_a*H_a*W_a, inner_dim]
+
         latent_hidden_states = self.proj_out(latent_hidden_states)
         latent_hidden_states = rearrange(latent_hidden_states,
                                              '1 (b l) (n c) -> b (l n) c',
@@ -794,8 +923,25 @@ class WanTransformer3DModel(ModelMixin, ConfigMixin):
         action_hidden_states = rearrange(action_hidden_states,
                                              '1 (b l) c -> b l c',
                                              b=batch_size)  #
+        obj_pred = None
+        obj_target = None
+        if self.object_pred_head is not None:
+            obj_pred, obj_target = self._compute_object_pred(
+                latent_feat=latent_feat,
+                action_feat=action_feat,
+                mask=input_dict.get("mask"),
+                latent_shape=latent_dict["targets"].shape,
+                batch_size=batch_size,
+                obj_k=int(input_dict.get("object_pred_k", 2)),
+                temporal_ratio=int(input_dict.get("vae_scale_factor_temporal", 4)),
+            )
 
-        return latent_hidden_states, action_hidden_states
+        return {
+            "latent_pred": latent_hidden_states,
+            "action_pred": action_hidden_states,
+            "obj_pred": obj_pred,
+            "obj_target": obj_target,
+        }
 
     def forward(
         self,

@@ -43,12 +43,11 @@ from utils import (
     FlowMatchScheduler
 )
 
-from dataset import MultiLatentLeRobotDataset
 import gc
-
+from dataset import MultiLatentLeRobotDataset
 
 class Trainer:
-    def __init__(self, config):
+    def __init__(self, config, train_dataset=None):
         if config.enable_wandb and config.rank == 0:
             wandb.login(host=os.environ['WANDB_BASE_URL'], key=os.environ['WANDB_API_KEY'])
             self.wandb = wandb
@@ -64,6 +63,15 @@ class Trainer:
             logger.info("WandB logging enabled")
         self.step = 0
         self.config = config
+
+        if getattr(config, "enable_mask_weighted_loss", False) and getattr(config, "enable_object_pred", False):
+            raise ValueError(
+                "enable_mask_weighted_loss and enable_object_pred are mutually "
+                "exclusive. Enabling both couples gradient signals from the "
+                "weighted reconstruction loss and the object future prediction "
+                "loss through the same latent feature pathway."
+            )
+
         self.device = torch.device(f"cuda:{config.local_rank}")
         self.dtype = config.param_dtype
         self.patch_size = config.patch_size
@@ -85,7 +93,9 @@ class Trainer:
             transformer_path,
             torch_dtype=torch.float32,
             torch_device='cpu',
-            attn_mode="flex"
+            attn_mode="flex",
+            enable_object_pred=getattr(config, "enable_object_pred", False),
+            load_object_pred_head=getattr(config, "enable_object_pred", False),
         )
 
         logger.info("Setting up activation checkpointing ...")
@@ -118,8 +128,10 @@ class Trainer:
             lr_lambda=lambda step: warmup_constant_lambda(step, warmup_steps=config.warmup_steps))
 
         # Setup dataloaders
-        logger.info("Setting up datasets...")
-        train_dataset = MultiLatentLeRobotDataset(config=config)
+        if train_dataset is None:
+            logger.info("Setting up datasets...")
+            train_dataset = MultiLatentLeRobotDataset(config=config)
+        logger.info("Dataset setup completed: samples=%s", len(train_dataset))
         train_sampler = DistributedSampler(
             train_dataset,
             num_replicas=config.world_size,
@@ -140,7 +152,7 @@ class Trainer:
         self.train_scheduler_action = FlowMatchScheduler(shift=self.config.action_snr_shift, sigma_min=0.0, extra_one_step=True)
         self.train_scheduler_action.set_timesteps(1000, training=True)
 
-        self.save_dir = Path(config.save_root) / "checkpoints"
+        self.save_dir = Path(config.save_root)
         self.save_dir.mkdir(parents=True, exist_ok=True)
 
         self.gradient_accumulation_steps = getattr(config, 'gradient_accumulation_steps', 1)
@@ -242,6 +254,9 @@ class Trainer:
         input_dict = {
             'latent_dict': latent_dict,
             'action_dict': action_dict,
+            'mask': batch_dict.get('mask'),
+            'object_pred_k': int(getattr(self.config, "object_pred_k", 2)),
+            'vae_scale_factor_temporal': int(getattr(self.config, "vae_scale_factor_temporal", 4)),
             'chunk_size': torch.randint(1, 5, (1,)).item(),
             'window_size': torch.randint(4, 65, (1,)).item(),
         }
@@ -257,7 +272,8 @@ class Trainer:
         input_dict,
         pred
     ):
-        latent_pred, action_pred = pred
+        latent_pred = pred["latent_pred"]
+        action_pred = pred["action_pred"]
         action_pred = rearrange(action_pred, 'b (f n) c -> b c f n 1', f=input_dict['action_dict']['targets'].shape[-3])
         latent_pred = data_seq_to_patch(
                         self.patch_size, latent_pred,
@@ -270,29 +286,134 @@ class Trainer:
         # Frame-wise video loss calculation
         latent_loss = F.mse_loss(latent_pred.float(), input_dict['latent_dict']['targets'].float().detach(), reduction='none')
         latent_loss = latent_loss * latent_loss_weight[:, None, :, None, None]
-        # Permute to (B, F, H, W, C) and flatten to (B*F, H*W*C)
-        latent_loss = latent_loss.permute(0, 2, 3, 4, 1)  # (B, C, F, H, W) -> (B, F, H, W, C)
-        latent_loss = latent_loss.flatten(0, 1).flatten(1)  # (B, F, H, W, C) -> (B*F, H*W*C)
-        # Sum per frame and compute mask per frame
-        latent_loss_per_frame = latent_loss.sum(dim=1)  # (B*F,)
-        latent_mask_per_frame = torch.ones_like(latent_loss).sum(dim=1)  # (B*F,)
-        latent_loss = (latent_loss_per_frame / (latent_mask_per_frame + 1e-6)).mean()
+        raw_latent_loss = self._compute_default_latent_loss(latent_loss)
+        if getattr(self.config, "enable_mask_weighted_loss", False):
+            masked_latent_loss = self._compute_mask_weighted_latent_loss(
+                latent_loss,
+                input_dict.get('mask'),
+            )
+        else:
+            masked_latent_loss = raw_latent_loss
 
         # Frame-wise action loss calculation
         action_loss = F.mse_loss(action_pred.float(), input_dict['action_dict']['targets'].float().detach(), reduction='none')
         action_loss = action_loss * action_loss_weight[:, None, :, None, None]
         action_loss = action_loss * input_dict['action_dict']['actions_mask'].float()
-        # Permute to (B, F, H, W, C) and flatten to (B*F, H*W*C)
-        action_loss = action_loss.permute(0, 2, 3, 4, 1)  # (B, C, F, H, W) -> (B, F, H, W, C)
-        action_mask = input_dict['action_dict']['actions_mask'].float().permute(0, 2, 3, 4, 1)  # (B, C, F, H, W) -> (B, F, H, W, C)
-        action_loss = action_loss.flatten(0, 1).flatten(1)  # (B, F, H, W, C) -> (B*F, H*W*C)
-        action_mask = action_mask.flatten(0, 1).flatten(1)  # (B, F, H, W, C) -> (B*F, H*W*C)
-        # Sum per frame and normalize by mask per frame
-        action_loss_per_frame = action_loss.sum(dim=1)  # (B*F,)
-        action_mask_per_frame = action_mask.sum(dim=1)  # (B*F,)
+        action_loss = action_loss.permute(0, 2, 3, 4, 1)
+        action_mask = input_dict['action_dict']['actions_mask'].float().permute(0, 2, 3, 4, 1)
+        action_loss = action_loss.flatten(0, 1).flatten(1)
+        action_mask = action_mask.flatten(0, 1).flatten(1)
+        action_loss_per_frame = action_loss.sum(dim=1)
+        action_mask_per_frame = action_mask.sum(dim=1)
         action_loss = (action_loss_per_frame / (action_mask_per_frame + 1e-6)).mean()
 
-        return latent_loss / self.gradient_accumulation_steps, action_loss / self.gradient_accumulation_steps
+        # --- Object Future Prediction loss ---
+        if getattr(self.config, "enable_object_pred", False):
+            obj_pred = pred.get("obj_pred")
+            obj_target = pred.get("obj_target")
+            if obj_pred is None or obj_target is None:
+                obj_loss = masked_latent_loss.new_zeros(())
+            else:
+                obj_loss = F.mse_loss(obj_pred.float(), obj_target.float())
+        else:
+            obj_loss = masked_latent_loss.new_zeros(())
+
+        return (
+            raw_latent_loss / self.gradient_accumulation_steps,
+            masked_latent_loss / self.gradient_accumulation_steps,
+            action_loss / self.gradient_accumulation_steps,
+            obj_loss / self.gradient_accumulation_steps,
+        )
+
+    def _compute_default_latent_loss(self, latent_loss):
+        latent_loss = latent_loss.permute(0, 2, 3, 4, 1)
+        latent_loss = latent_loss.flatten(0, 1).flatten(1)
+        latent_loss_per_frame = latent_loss.sum(dim=1)
+        latent_mask_per_frame = torch.ones_like(latent_loss).sum(dim=1)
+        return (latent_loss_per_frame / (latent_mask_per_frame + 1e-6)).mean()
+
+    def _align_mask_to_token_grid(self, mask, target_frames, target_h, target_w):
+        if mask is None:
+            return None
+
+        if mask.dim() == 4:
+            mask = mask.unsqueeze(1)
+        elif mask.dim() != 5:
+            raise ValueError(f"Expected mask with 4 or 5 dims, got shape {tuple(mask.shape)}")
+
+        mask = mask.float()
+
+        if mask.shape[2] != target_frames:
+            source_frames = mask.shape[2]
+            temporal_ratio = int(getattr(self.config, "vae_scale_factor_temporal", 4))
+            expected_frames = (source_frames - 1) // temporal_ratio + 1
+            if target_frames != expected_frames:
+                raise ValueError(
+                    "Mask temporal shape does not match VAE temporal compression rule: "
+                    f"source_frames={source_frames}, target_frames={target_frames}, "
+                    f"expected_target={(source_frames - 1) // temporal_ratio + 1}, "
+                    f"temporal_ratio={temporal_ratio}"
+                )
+            mask = self._compress_mask_temporal_like_wan_vae(
+                mask,
+                target_frames=target_frames,
+                temporal_ratio=temporal_ratio,
+            )
+
+        if mask.shape[3] != target_h or mask.shape[4] != target_w:
+            raise ValueError(
+                "Mask spatial shape does not match latent token grid: "
+                f"mask={tuple(mask.shape)}, target=(*, *, {target_frames}, {target_h}, {target_w})"
+            )
+
+        return mask
+
+    def _compress_mask_temporal_like_wan_vae(self, mask, target_frames, temporal_ratio):
+        # Wan VAE encodes frame 0 alone, then encodes complete 4-frame chunks:
+        # [0], [1..4], [5..8], ...
+        if target_frames == 1:
+            return mask[:, :, :1]
+
+        first = mask[:, :, :1]
+        usable_rest_frames = (target_frames - 1) * temporal_ratio
+        rest = mask[:, :, 1:1 + usable_rest_frames]
+        b, c, _, h, w = rest.shape
+        rest = rest.reshape(
+            b,
+            c,
+            target_frames - 1,
+            temporal_ratio,
+            h,
+            w,
+        ).amax(dim=3)
+        return torch.cat([first, rest], dim=2)
+
+    def _compute_mask_weighted_latent_loss(self, latent_loss, mask):
+        if mask is None:
+            raise ValueError(
+                "enable_mask_weighted_loss=True requires dataset masks, but this batch has mask=None."
+            )
+
+        patch_f, patch_h, patch_w = self.patch_size
+        token_loss = rearrange(
+            latent_loss,
+            'b c (f pf) (h ph) (w pw) -> b f h w (c pf ph pw)',
+            pf=patch_f,
+            ph=patch_h,
+            pw=patch_w,
+        ).mean(dim=-1)
+
+        mask = self._align_mask_to_token_grid(
+            mask,
+            target_frames=token_loss.shape[1],
+            target_h=token_loss.shape[2],
+            target_w=token_loss.shape[3],
+        ).squeeze(1)
+        foreground_weight = float(getattr(self.config, "mask_foreground_weight", 1.0))
+        weight_map = 1.0 + (foreground_weight - 1.0) * mask
+        weighted_loss = (token_loss * weight_map).flatten(2).sum(dim=2)
+        weight = weight_map.flatten(2).sum(dim=2)
+        return (weighted_loss / (weight + 1e-6)).mean()
 
     def _train_step(self, batch, batch_idx):
         """Train a single batch, returns losses for logging."""
@@ -307,12 +428,18 @@ class Trainer:
             self.transformer.set_requires_gradient_sync(True)
 
         output = self.transformer(input_dict, train_mode=True)
-        latent_loss, action_loss = self.compute_loss(input_dict, output)
-        loss = latent_loss + action_loss
+        latent_loss, masked_latent_loss, action_loss, obj_loss = self.compute_loss(input_dict, output)
+        obj_weight = getattr(self.config, 'object_pred_loss_weight', 0.0)
+        loss = masked_latent_loss + action_loss + obj_weight * obj_loss
 
         loss.backward()
 
-        losses = {'latent_loss': latent_loss.detach(), 'action_loss': action_loss.detach()}
+        losses = {
+            'latent_loss': latent_loss.detach(),
+            'masked_latent_loss': masked_latent_loss.detach(),
+            'action_loss': action_loss.detach(),
+            'obj_loss': obj_loss.detach(),
+        }
         
         # Only update weights after accumulating gradients
         if should_sync:
@@ -336,6 +463,16 @@ class Trainer:
                 options=StateDictOptions(full_state_dict=True, cpu_offload=True),
             )
             state_dict_bf16 = {k: v.to(torch.bfloat16) for k, v in state_dict.items()}
+            object_pred_prefix = "object_pred_head."
+            transformer_state_dict_bf16 = {
+                k: v for k, v in state_dict_bf16.items()
+                if not k.startswith(object_pred_prefix)
+            }
+            object_pred_state_dict_bf16 = {
+                k[len(object_pred_prefix):]: v
+                for k, v in state_dict_bf16.items()
+                if k.startswith(object_pred_prefix)
+            }
             # optim_state = get_optimizer_state_dict(
             #         self.transformer, self.optimizer,
             #         options=StateDictOptions(full_state_dict=True, cpu_offload=True),
@@ -355,12 +492,17 @@ class Trainer:
                 # Manually save in diffusers format (outside FSDP context to avoid deadlock)
                 # Save model weights
                 model_file = transformer_dir / "diffusion_pytorch_model.safetensors"
-                save_file(state_dict_bf16, model_file)
+                save_file(transformer_state_dict_bf16, model_file)
+
+                if object_pred_state_dict_bf16:
+                    object_pred_file = transformer_dir / "object_pred_head.safetensors"
+                    save_file(object_pred_state_dict_bf16, object_pred_file)
 
                 # Save config (copy from original transformer config and update _name_or_path)
                 config_file = transformer_dir / "config.json"
                 config_dict = dict(self.transformer.config)
                 config_dict.pop('_name_or_path', None)
+                config_dict["enable_object_pred"] = False
                 with open(config_file, 'w') as f:
                     json.dump(config_dict, f, indent=2)
 
@@ -435,7 +577,9 @@ class Trainer:
 
         self.optimizer.zero_grad()
         accumulated_latent_losses = []
+        accumulated_masked_latent_losses = []
         accumulated_action_losses = []
+        accumulated_obj_losses = []
         step_in_accumulation = 0
 
         while self.step < self.config.num_steps:
@@ -446,7 +590,9 @@ class Trainer:
             
             # Accumulate losses for logging
             accumulated_latent_losses.append(losses['latent_loss'])
+            accumulated_masked_latent_losses.append(losses['masked_latent_loss'])
             accumulated_action_losses.append(losses['action_loss'])
+            accumulated_obj_losses.append(losses['obj_loss'])
             step_in_accumulation += 1
 
             # Log and checkpoint when optimizer steps
@@ -455,13 +601,27 @@ class Trainer:
 
                 # Average accumulated losses
                 latent_loss_show = dist_mean(torch.stack(accumulated_latent_losses).sum()).detach().cpu().item()
+                masked_latent_loss_show = dist_mean(
+                    torch.stack(accumulated_masked_latent_losses).sum()
+                ).detach().cpu().item()
                 action_loss_show = dist_mean(torch.stack(accumulated_action_losses).sum()).detach().cpu().item()
+                obj_loss_show = dist_mean(torch.stack(accumulated_obj_losses).sum()).detach().cpu().item()
+                total_loss_show = (
+                    masked_latent_loss_show
+                    + action_loss_show
+                    + getattr(self.config, 'object_pred_loss_weight', 0.0) * obj_loss_show
+                )
                 max_latent_loss_show = dist_max(torch.stack(accumulated_latent_losses).sum()).detach().cpu().item()
+                max_masked_latent_loss_show = dist_max(
+                    torch.stack(accumulated_masked_latent_losses).sum()
+                ).detach().cpu().item()
                 max_action_loss_show = dist_max(torch.stack(accumulated_action_losses).sum()).detach().cpu().item()
 
                 # Clear accumulated losses
                 accumulated_latent_losses = []
+                accumulated_masked_latent_losses = []
                 accumulated_action_losses = []
+                accumulated_obj_losses = []
                 step_in_accumulation = 0
 
                 torch.cuda.synchronize()
@@ -472,22 +632,40 @@ class Trainer:
                 if self.config.rank == 0:
                     total_norm = losses['total_norm']
                     progress_bar.n += 1
-                    progress_bar.set_postfix({
+                    postfix = {
                         'latent_loss': f'{latent_loss_show:.4f}',
                         'action_loss': f'{action_loss_show:.4f}',
+                    }
+                    if getattr(self.config, "enable_mask_weighted_loss", False):
+                        postfix['masked_latent_loss'] = f'{masked_latent_loss_show:.4f}'
+                    if getattr(self.config, "enable_object_pred", False):
+                        postfix['obj_loss'] = f'{obj_loss_show:.4f}'
+                    postfix.update({
                         'step': self.step,
                         'grad_norm': f'{total_norm.item():.2f}',
                         'lr': f'{lr:.2e}'
                     })
+                    progress_bar.set_postfix(postfix)
                     if self.config.enable_wandb:
-                        self.wandb.log({
+                        wandb_log = {
+                            'loss_metrics/global_avg_total_loss': total_loss_show,
                             'loss_metrics/global_avg_video_loss': latent_loss_show,
+                            'loss_metrics/global_avg_masked_latent_loss': masked_latent_loss_show,
                             'loss_metrics/global_avg_action_loss': action_loss_show,
                             'loss_metrics/global_max_video_loss': max_latent_loss_show,
+                            'loss_metrics/global_max_masked_latent_loss': max_masked_latent_loss_show,
                             'loss_metrics/global_max_action_loss': max_action_loss_show,
                             'grad_norm': total_norm.item(),
                             'lr': lr,
-                        }, step=self.step)
+                        }
+                        if getattr(self.config, "enable_object_pred", False):
+                            wandb_log['loss_metrics/global_avg_obj_loss'] = obj_loss_show
+                        if getattr(self.config, "enable_mask_weighted_loss", False):
+                            wandb_log['loss_metrics/global_avg_mask_weighted_video_loss'] = masked_latent_loss_show
+                            wandb_log['config/mask_foreground_weight'] = float(
+                                getattr(self.config, "mask_foreground_weight", 1.0)
+                            )
+                        self.wandb.log(wandb_log, step=self.step)
                 
                 self.step += 1
                 
@@ -511,8 +689,6 @@ def run(args):
     local_rank = int(os.environ.get('LOCAL_RANK', 0))
     world_size = int(os.environ.get("WORLD_SIZE", 1))
 
-    init_distributed(world_size, local_rank, rank)
-
     config.rank = rank
     config.local_rank = local_rank
     config.world_size = world_size
@@ -524,7 +700,13 @@ def run(args):
         logger.info(f"Using config: {args.config_name}")
         logger.info(f"World size: {world_size}, Local rank: {local_rank}")
 
-    trainer = Trainer(config)
+    logger.info("Setting up datasets before distributed init...")
+    train_dataset = MultiLatentLeRobotDataset(config=config)
+    logger.info("Pre-distributed dataset setup completed: samples=%s", len(train_dataset))
+
+    init_distributed(world_size, local_rank, rank)
+
+    trainer = Trainer(config, train_dataset=train_dataset)
     trainer.train()
 
 
@@ -535,13 +717,14 @@ def main():
         "--config-name",
         type=str,
         default='robotwin_train',
+        choices=sorted(VA_CONFIGS.keys()),
         help="Config name",
     )
     parser.add_argument(
         "--save-root",
         type=str,
         default=None,
-        help="Root directory for saving checkpoints",
+        help="Directory for checkpoint_step_* folders",
     )
 
     args = parser.parse_args()

@@ -2,10 +2,12 @@
 from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 from lerobot.datasets.utils import get_episode_data_index
 from lerobot.datasets.compute_stats import aggregate_stats, compute_episode_stats
+import logging
 import numpy as np
 from pathlib import Path
 from collections.abc import Callable
 import os
+import time
 from tqdm import tqdm
 from multiprocessing import Pool
 from functools import partial
@@ -14,6 +16,8 @@ from einops import rearrange
 from torch.utils.data import DataLoader
 from scipy.spatial.transform import Rotation as R
 from lerobot.constants import HF_LEROBOT_HOME
+
+logger = logging.getLogger(__name__)
 
 def recursive_find_file(directory, filename='info.json'):
     result = []
@@ -32,10 +36,25 @@ def construct_lerobot(
     repo_id,
     config,
 ):
-    return LatentLeRobotDataset(
-        repo_id=repo_id,
-        config=config,
+    start_time = time.perf_counter()
+    logger.info("Dataset init start: repo_id=%s pid=%s", repo_id, os.getpid())
+    try:
+        dataset = LatentLeRobotDataset(
+            repo_id=repo_id,
+            config=config,
+        )
+    except Exception:
+        logger.exception("Dataset init failed: repo_id=%s pid=%s", repo_id, os.getpid())
+        raise
+
+    logger.info(
+        "Dataset init done: repo_id=%s pid=%s samples=%s elapsed=%.2fs",
+        repo_id,
+        os.getpid(),
+        len(dataset),
+        time.perf_counter() - start_time,
     )
+    return dataset
 
 def construct_lerobot_multi_processor(config, 
                                       num_init_worker=8,
@@ -45,10 +64,26 @@ def construct_lerobot_multi_processor(config,
         construct_lerobot,
         config=config,
     )
+    logger.info(
+        "Dataset scan start: dataset_path=%s num_init_worker=%s",
+        config.dataset_path,
+        num_init_worker,
+    )
     repo_list = recursive_find_file(config.dataset_path, 'info.json')
     repo_list = [v.split('/meta/info.json')[0] for v in repo_list]
+    logger.info(
+        "Dataset scan done: dataset_path=%s repo_count=%s",
+        config.dataset_path,
+        len(repo_list),
+    )
+    start_time = time.perf_counter()
     with Pool(num_init_worker) as pool:
         datasets_out_lst = pool.map(construct_func, repo_list)
+    logger.info(
+        "Dataset pool init done: repo_count=%s elapsed=%.2fs",
+        len(datasets_out_lst),
+        time.perf_counter() - start_time,
+    )
                 
     return datasets_out_lst
 
@@ -71,7 +106,7 @@ class MultiLatentLeRobotDataset(torch.utils.data.Dataset):
     def __init__(
         self,
         config,
-        num_init_worker=128,
+        num_init_worker=16,
     ):
         self._datasets = construct_lerobot_multi_processor(config, 
                                                            num_init_worker, 
@@ -124,14 +159,22 @@ class LatentLeRobotDataset(LeRobotDataset):
         self.episodes_since_last_encoding = 0
         self.image_writer = None
         self.episode_buffer = None
+        init_start_time = time.perf_counter()
         self.root.mkdir(exist_ok=True, parents=True)
+        meta_start_time = time.perf_counter()
         self.meta = LeRobotDatasetMetadata(
             self.repo_id, self.root, self.revision, force_cache_sync=False
+        )
+        logger.info(
+            "Repo metadata loaded: repo_id=%s elapsed=%.2fs",
+            self.repo_id,
+            time.perf_counter() - meta_start_time,
         )
         if self.episodes is not None and self.meta._version >= packaging.version.parse("v2.1"):
             episodes_stats = [self.meta.episodes_stats[ep_idx] for ep_idx in self.episodes]
             self.stats = aggregate_stats(episodes_stats)
         
+        hf_start_time = time.perf_counter()
         try:
             assert all((self.root / fpath).is_file() for fpath in self.get_episodes_file_paths())
             self.hf_dataset = self.load_hf_dataset()
@@ -139,9 +182,15 @@ class LatentLeRobotDataset(LeRobotDataset):
             self.revision = get_safe_version(self.repo_id, self.revision)
             self.download_episodes(download_videos)
             self.hf_dataset = self.load_hf_dataset()
+        logger.info(
+            "Repo hf_dataset loaded: repo_id=%s elapsed=%.2fs",
+            self.repo_id,
+            time.perf_counter() - hf_start_time,
+        )
         self.episode_data_index = get_episode_data_index(self.meta.episodes, self.episodes)
         
         self.latent_path = Path(repo_id) / 'latents'
+        self.mask_path = Path(repo_id) / 'masks'
         self.empty_emb = torch.load(config.empty_emb_path, weights_only=False)
         self.config = config
         self.cfg_prob = config.cfg_prob
@@ -153,15 +202,25 @@ class LatentLeRobotDataset(LeRobotDataset):
                 columns=['action'],
                 output_all_columns=False
             )
+        parse_start_time = time.perf_counter()
         self.parse_meta()
+        logger.info(
+            "Repo ready: repo_id=%s samples=%s parse_elapsed=%.2fs total_elapsed=%.2fs",
+            self.repo_id,
+            len(self.new_metas),
+            time.perf_counter() - parse_start_time,
+            time.perf_counter() - init_start_time,
+        )
 
     def parse_meta(self):
         out = []
+        action_config_count = 0
         for key, value in self.meta.episodes.items():
             episode_index = value["episode_index"]
             tasks = value["tasks"]
             action_config = value["action_config"]
             for acfg in action_config:
+                action_config_count += 1
                 cur_meta = {
                     "episode_index": episode_index,
                     "tasks": tasks,
@@ -177,6 +236,13 @@ class LatentLeRobotDataset(LeRobotDataset):
                 if check_statu:
                     out.append(cur_meta)
         self.new_metas = out
+        logger.info(
+            "Repo parse_meta done: repo_id=%s episodes=%s action_configs=%s valid_samples=%s",
+            self.repo_id,
+            len(self.meta.episodes),
+            action_config_count,
+            len(self.new_metas),
+        )
 
     def _check_meta(self, start_frame, end_frame, episode_index):
         episode_chunk = self.meta.get_episode_chunk(episode_index)
@@ -306,6 +372,22 @@ class LatentLeRobotDataset(LeRobotDataset):
         out_dict['actions'], out_dict['actions_mask'] = self._action_post_process(local_start_frame, local_end_frame, latent_frame_ids, ori_data_dict['action'])
 
         out_dict['latents'] = out_dict['latents'].permute(3, 0, 1, 2)
+
+        # Load preprocessed mask (token resolution, tshape-concatenated)
+        episode_chunk = self.meta.get_episode_chunk(episode_index)
+        mask_file = (
+            self.mask_path / f"chunk-{episode_chunk:03d}"
+            / f"episode_{episode_index:06d}_{local_start_frame}_{local_end_frame}.pth"
+        )
+        if mask_file.is_file():
+            mask_data = torch.load(mask_file, map_location="cpu", weights_only=False)
+            out_dict["mask"] = mask_data["mask"]  # [1, F, H_tok, W_tok]
+        else:
+            out_dict["mask"] = None
+
+        for key, value in out_dict.items():
+            if isinstance(value, torch.Tensor):
+                out_dict[key] = value.contiguous().clone()
         return out_dict
 
     def __len__(self):

@@ -6,7 +6,7 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 import cv2
 from pathlib import Path
 
-robowin_root = Path("/path/to/your/robowin")
+robowin_root = Path("/data1/liu/exp/RoboTwin")
 if str(robowin_root) not in sys.path:
     sys.path.insert(0, str(robowin_root))
 
@@ -55,6 +55,24 @@ def write_json(data: dict, fpath: Path) -> None:
     fpath.parent.mkdir(exist_ok=True, parents=True)
     with open(fpath, "w") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
+
+def print_camera_perturbation_config(args):
+    camera_perturbation = args.get("camera_perturbation", {})
+    enabled = camera_perturbation.get("enabled", False)
+    print("\033[96mCamera Perturbation:\033[0m " + str(enabled))
+    if not enabled:
+        return
+
+    print(" - C1 Distance: " + str(camera_perturbation.get("c1_distance", False)))
+    print(" - C1 Scale Range: " + str(camera_perturbation.get("c1_distance_scale_range", [0.85, 1.0])))
+    print(" - C2 Spherical: " + str(camera_perturbation.get("c2_spherical", False)))
+    print(" - C3 Orientation: " + str(camera_perturbation.get("c3_orientation", False)))
+    print(" - C3 Yaw/Pitch/Roll Deg: " + str([
+        camera_perturbation.get("c3_yaw_deg", 5),
+        camera_perturbation.get("c3_pitch_deg", 5),
+        camera_perturbation.get("c3_roll_deg", 5),
+    ]))
+    print(" - Anchor Mode: " + str(camera_perturbation.get("anchor_mode", "table_center")))
 
 def add_title_bar(img, text, font_scale=0.8, thickness=2):
     """Add a black title bar with text above the image"""
@@ -377,6 +395,7 @@ def main(usr_args):
         print(" - Crazy Random Light Rate: " + str(args["domain_randomization"]["crazy_random_light_rate"]))
     print("\033[95mRandom Table Height:\033[0m " + str(args["domain_randomization"]["random_table_height"]))
     print("\033[95mRandom Head Camera Distance:\033[0m " + str(args["domain_randomization"]["random_head_camera_dis"]))
+    print_camera_perturbation_config(args)
 
     print("\033[94mHead Camera Config:\033[0m " + str(args["camera"]["head_camera_type"]) + f", " +
           str(args["camera"]["collect_head_camera"]))
@@ -697,4 +716,3 @@ if __name__ == "__main__":
     Sapien_TEST()
     usr_args = parse_args_and_config()
     main(usr_args)
-

@@ -1,6 +1,9 @@
 # Copyright 2024-2025 The Robbyant Team Authors. All rights reserved.
+from pathlib import Path
+
 import torch
 from diffusers import AutoencoderKLWan
+from safetensors.torch import load_file
 from transformers import (
     T5TokenizerFast,
     UMT5EncoderModel,
@@ -42,13 +45,29 @@ def load_transformer(
     transformer_path,
     torch_dtype,
     torch_device,
+    enable_object_pred=False,
+    load_object_pred_head=False,
     **kwargs
 ):
     model = WanTransformer3DModel.from_pretrained(
         transformer_path,
         torch_dtype=torch_dtype,
+        enable_object_pred=enable_object_pred,
         **kwargs
     )
+
+    object_pred_head = getattr(model, "object_pred_head", None)
+    if object_pred_head is not None and any(param.is_meta for param in object_pred_head.parameters()):
+        object_pred_head.to_empty(device=torch.device("cpu"))
+        for module in object_pred_head.modules():
+            if hasattr(module, "reset_parameters"):
+                module.reset_parameters()
+
+    if enable_object_pred and load_object_pred_head and object_pred_head is not None:
+        object_pred_head_file = Path(transformer_path) / "object_pred_head.safetensors"
+        if object_pred_head_file.exists():
+            object_pred_head.load_state_dict(load_file(str(object_pred_head_file)), strict=True)
+
     return model.to(torch_device)
 
 
