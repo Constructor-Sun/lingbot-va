@@ -1,9 +1,24 @@
 # Copyright 2024-2025 The Robbyant Team Authors. All rights reserved.
 import os
+from pathlib import Path
 
 from easydict import EasyDict
 
 from .shared_config import va_shared_cfg
+
+
+def _find_counterfactual_root() -> Path:
+    env = os.environ.get("COUNTERFACTUAL_ROOT")
+    if env:
+        return Path(env)
+    start = Path(__file__).resolve().parent
+    for ancestor in [start] + list(start.parents):
+        if (ancestor / ".git").is_dir() and (ancestor / "robust_wam").is_dir():
+            return ancestor
+    raise RuntimeError("Cannot find counterfactual project root. Set COUNTERFACTUAL_ROOT.")
+
+
+_CF_ROOT = _find_counterfactual_root()
 
 
 def _get_robocasa_obs_cam_keys():
@@ -30,7 +45,7 @@ va_robocasa_cfg.update(va_shared_cfg)
 va_shared_cfg.infer_mode = 'server'
 
 va_robocasa_cfg.wan22_pretrained_model_name_or_path = os.path.expanduser(
-    os.environ.get("MODEL_ROOT", "~/exp/checkpoints/lingbot-va-base")
+    os.environ.get("MODEL_ROOT", str(_CF_ROOT / "checkpoints" / "lingbot-va-base"))
 )
 
 va_robocasa_cfg.attn_window = 30

@@ -1,6 +1,7 @@
 import argparse
 import json
 import multiprocessing as mp
+import os
 import sys
 from pathlib import Path
 
@@ -11,6 +12,9 @@ import torch.nn.functional as F
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+_CF_ROOT = REPO_ROOT.parents[1]  # counterfactual root
+_EXP_ROOT = _CF_ROOT.parent  # /data1/liu/exp (sibling of counterfactual)
+_CHECKPOINT_ROOT = _CF_ROOT / "checkpoints"
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -21,8 +25,17 @@ from wan_va.modules.utils import (  # noqa: E402
 )
 
 
-DEFAULT_DATASET_ROOT = Path("/data1/liu/exp/robocasa/datasets/training_no_base/atomic")
-DEFAULT_CHECKPOINT_ROOT = Path("/data1/liu/exp/checkpoints/lingbot-va-base")
+DEFAULT_DATASET_ROOT = os.environ.get("ROBOCASA_DATASET_PATH")
+if DEFAULT_DATASET_ROOT is None:
+    DEFAULT_DATASET_ROOT = _EXP_ROOT / "robocasa" / "datasets" / "training_no_base" / "atomic"
+else:
+    DEFAULT_DATASET_ROOT = Path(DEFAULT_DATASET_ROOT)
+
+DEFAULT_CHECKPOINT_ROOT = os.environ.get("LINGBOT_CHECKPOINT_ROOT")
+if DEFAULT_CHECKPOINT_ROOT is None:
+    DEFAULT_CHECKPOINT_ROOT = _CHECKPOINT_ROOT / "lingbot-va-base"
+else:
+    DEFAULT_CHECKPOINT_ROOT = Path(DEFAULT_CHECKPOINT_ROOT)
 DEFAULT_DEVICE = "cuda"
 DEFAULT_DTYPE = "bfloat16"
 DEFAULT_TARGET_FPS = 10

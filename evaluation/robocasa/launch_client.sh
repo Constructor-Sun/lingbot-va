@@ -3,6 +3,7 @@ set -e
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 LINGBOT_VA_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
+CF_ROOT="${COUNTERFACTUAL_ROOT:-$(cd "$LINGBOT_VA_ROOT/../.." && pwd)}"
 cd "$LINGBOT_VA_ROOT"
 export PYTHONPATH="$LINGBOT_VA_ROOT:${PYTHONPATH:-}"
 
@@ -12,7 +13,7 @@ OUT_DIR=${OUT_DIR:-outputs/robocasa}
 SPLIT=${SPLIT:-target}
 MAX_STEPS=${MAX_STEPS:-150}
 CAMERA_SIZE=${CAMERA_SIZE:-256}
-ROBOCASA_ROOT=${ROBOCASA_ROOT:-/data3/liu/exp/robocasa}
+ROBOCASA_ROOT=${ROBOCASA_ROOT:-$CF_ROOT/../robocasa}
 TASK_REGISTRY_JSON=${TASK_REGISTRY_JSON:-evaluation/robocasa/task_mobility_groups.json}
 TASK_GROUP=${TASK_GROUP:-guaranteed_no_base_motion}
 ROBOCASA_ACTION_MODE=${ROBOCASA_ACTION_MODE:-no_base}

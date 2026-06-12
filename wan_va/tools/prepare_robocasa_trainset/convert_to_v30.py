@@ -15,8 +15,24 @@ from lerobot.datasets.v30.convert_dataset_v21_to_v30 import (
 )
 
 
-DEFAULT_SOURCE_ROOT = Path("/data1/liu/exp/robocasa/datasets/training_no_base/atomic")
-DEFAULT_OUTPUT_ROOT = Path("/data1/liu/exp/robocasa/datasets/training_no_base_v30/atomic")
+def _find_counterfactual_root() -> Path:
+    env = os.environ.get("COUNTERFACTUAL_ROOT")
+    if env:
+        return Path(env)
+    start = Path(__file__).resolve().parent
+    for ancestor in [start] + list(start.parents):
+        if (ancestor / ".git").is_dir() and (ancestor / "robust_wam").is_dir():
+            return ancestor
+    raise RuntimeError("Cannot find counterfactual project root. Set COUNTERFACTUAL_ROOT.")
+
+
+_CF_ROOT = _find_counterfactual_root()
+_EXP_ROOT = _CF_ROOT.parent
+
+_SRC = os.environ.get("ROBOCASA_DATASET_PATH")
+DEFAULT_SOURCE_ROOT = Path(_SRC) if _SRC else (_EXP_ROOT / "robocasa" / "datasets" / "training_no_base" / "atomic")
+_OUT = os.environ.get("ROBOCASA_OUTPUT_DATASET_PATH")
+DEFAULT_OUTPUT_ROOT = Path(_OUT) if _OUT else (_EXP_ROOT / "robocasa" / "datasets" / "training_no_base_v30" / "atomic")
 
 
 def copy_file(src: str, dst: str) -> None:

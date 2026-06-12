@@ -4,13 +4,16 @@ set -x
 
 umask 007
 
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+COUNTERFACTUAL_ROOT=${COUNTERFACTUAL_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}
+
 NGPU=${NGPU:-"1"}
 MASTER_PORT=${MASTER_PORT:-"29501"}
 PORT=${PORT:-"1106"}
 LOG_RANK=${LOG_RANK:-"0"}
 TORCHFT_LIGHTHOUSE=${TORCHFT_LIGHTHOUSE:-"http://localhost:29510"}
 CONFIG_NAME=${CONFIG_NAME:-"robotwin_train_mask_weighted"}
-SAVE_ROOT=${SAVE_ROOT:-"./checkpoints/mask_weight_5"}
+SAVE_ROOT=${SAVE_ROOT:-"${COUNTERFACTUAL_ROOT}/checkpoints/mask_weight_5"}
 
 export WANDB_API_KEY="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"
 export WANDB_BASE_URL="https://api.wandb.ai"

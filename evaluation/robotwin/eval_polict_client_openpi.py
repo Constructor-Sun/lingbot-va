@@ -6,7 +6,20 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 import cv2
 from pathlib import Path
 
-robowin_root = Path("/data1/liu/exp/RoboTwin")
+
+def _find_counterfactual_root() -> Path:
+    env = os.environ.get("COUNTERFACTUAL_ROOT")
+    if env:
+        return Path(env)
+    start = Path(__file__).resolve().parent
+    for ancestor in [start] + list(start.parents):
+        if (ancestor / ".git").is_dir() and (ancestor / "robust_wam").is_dir():
+            return ancestor
+    raise RuntimeError("Cannot find counterfactual project root. Set COUNTERFACTUAL_ROOT.")
+
+
+_CF_ROOT = _find_counterfactual_root()
+robowin_root = _CF_ROOT / "external" / "RoboTwin"
 if str(robowin_root) not in sys.path:
     sys.path.insert(0, str(robowin_root))
 

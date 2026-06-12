@@ -1,4 +1,5 @@
 import argparse
+import os
 import re
 from pathlib import Path
 
@@ -6,7 +7,22 @@ import numpy as np
 import pandas as pd
 
 
-DEFAULT_DATASET_ROOT = "/data1/liu/exp/robocasa/datasets/training_no_base/atomic"
+def _find_counterfactual_root() -> Path:
+    env = os.environ.get("COUNTERFACTUAL_ROOT")
+    if env:
+        return Path(env)
+    start = Path(__file__).resolve().parent
+    for ancestor in [start] + list(start.parents):
+        if (ancestor / ".git").is_dir() and (ancestor / "robust_wam").is_dir():
+            return ancestor
+    raise RuntimeError("Cannot find counterfactual project root. Set COUNTERFACTUAL_ROOT.")
+
+
+_CF_ROOT = _find_counterfactual_root()
+_EXP_ROOT = _CF_ROOT.parent
+
+_DATASET = os.environ.get("ROBOCASA_DATASET_PATH")
+DEFAULT_DATASET_ROOT = _DATASET if _DATASET else str(_EXP_ROOT / "robocasa" / "datasets" / "training_no_base" / "atomic")
 DEFAULT_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "configs" / "va_robocasa_no_base_cfg.py"
 )

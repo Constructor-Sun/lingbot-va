@@ -1,12 +1,31 @@
 # Copyright 2024-2025 The Robbyant Team Authors. All rights reserved.
 from easydict import EasyDict
+import os
+from pathlib import Path
 
 from .shared_config import va_shared_cfg
+
+
+def _find_counterfactual_root() -> Path:
+    env = os.environ.get("COUNTERFACTUAL_ROOT")
+    if env:
+        return Path(env)
+    start = Path(__file__).resolve().parent
+    for ancestor in [start] + list(start.parents):
+        if (ancestor / ".git").is_dir() and (ancestor / "robust_wam").is_dir():
+            return ancestor
+    raise RuntimeError("Cannot find counterfactual project root. Set COUNTERFACTUAL_ROOT.")
+
+
+_CF_ROOT = _find_counterfactual_root()
 
 va_robotwin_cfg = EasyDict(__name__='Config: VA robotwin')
 va_robotwin_cfg.update(va_shared_cfg)
 
-va_robotwin_cfg.wan22_pretrained_model_name_or_path = "/data1/liu/exp/checkpoints/checkpoint_step_2800"
+va_robotwin_cfg.wan22_pretrained_model_name_or_path = os.environ.get(
+    "LINGBOT_CHECKPOINT_PATH",
+    str(_CF_ROOT / "checkpoints" / "lingbot-va-sft"),
+)
 
 va_robotwin_cfg.attn_window = 72
 va_robotwin_cfg.frame_chunk_size = 2

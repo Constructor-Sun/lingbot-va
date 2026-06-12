@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -7,14 +8,19 @@ import torch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+_CF_ROOT = REPO_ROOT.parents[1]  # counterfactual root
+_EXP_ROOT = _CF_ROOT.parent  # /data1/liu/exp (sibling of counterfactual)
+_CHECKPOINT_ROOT = _CF_ROOT / "checkpoints"
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from wan_va.modules.utils import load_text_encoder, load_tokenizer  # noqa: E402
 
 
-DEFAULT_DATASET_ROOT = Path("/data1/liu/exp/robocasa/datasets/training_no_base/atomic")
-DEFAULT_CHECKPOINT_ROOT = Path("/data1/liu/exp/checkpoints/lingbot-va-base")
+_DATASET = os.environ.get("ROBOCASA_DATASET_PATH")
+DEFAULT_DATASET_ROOT = Path(_DATASET) if _DATASET else (_EXP_ROOT / "robocasa" / "datasets" / "training_no_base" / "atomic")
+_CHECKPOINT = os.environ.get("LINGBOT_CHECKPOINT_ROOT")
+DEFAULT_CHECKPOINT_ROOT = Path(_CHECKPOINT) if _CHECKPOINT else (_CHECKPOINT_ROOT / "lingbot-va-base")
 DEFAULT_DEVICE = "cuda"
 DEFAULT_DTYPE = "bfloat16"
 DEFAULT_MAX_TEXT_LENGTH = 512

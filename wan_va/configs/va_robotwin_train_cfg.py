@@ -2,12 +2,29 @@
 from easydict import EasyDict
 from .va_robotwin_cfg import va_robotwin_cfg
 import os
+from pathlib import Path
+
+
+def _find_counterfactual_root() -> Path:
+    env = os.environ.get("COUNTERFACTUAL_ROOT")
+    if env:
+        return Path(env)
+    start = Path(__file__).resolve().parent
+    for ancestor in [start] + list(start.parents):
+        if (ancestor / ".git").is_dir() and (ancestor / "robust_wam").is_dir():
+            return ancestor
+    raise RuntimeError("Cannot find counterfactual project root. Set COUNTERFACTUAL_ROOT.")
+
+
+_CF_ROOT = _find_counterfactual_root()
 
 va_robotwin_train_cfg = EasyDict(__name__='Config: VA robotwin train')
 va_robotwin_train_cfg.update(va_robotwin_cfg)
 
-# va_robotwin_train_cfg.dataset_path = '/path/to/your/dataset'
-va_robotwin_train_cfg.dataset_path = '/data1/liu/exp/lingbot_train/data/data_w_mask_clean_large_le320'
+va_robotwin_train_cfg.dataset_path = os.environ.get(
+    "LINGBOT_DATASET_PATH",
+    str(_CF_ROOT / "robust_wam" / "data" / "data_w_mask_clean_large_le320"),
+)
 va_robotwin_train_cfg.empty_emb_path = os.path.join(va_robotwin_train_cfg.dataset_path, 'empty_emb.pt')
 va_robotwin_train_cfg.enable_wandb = True
 va_robotwin_train_cfg.load_worker = 16

@@ -69,7 +69,7 @@ python3 va/lingbot-va/wan_va/tools/compute_robocasa_norm_stat.py --write-config
 The script defaults to:
 
 ```text
-/data3/liu/exp/robocasa/datasets/v1.0/target/**/lerobot/meta/stats.json
+/path/to/robocasa/datasets/v1.0/target/**/lerobot/meta/stats.json
 ```
 
 Pass `--tasks TaskA TaskB` to restrict the pooled stats to selected tasks.

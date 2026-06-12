@@ -1,11 +1,29 @@
 from easydict import EasyDict
 from .va_robocasa_no_base_cfg import va_robocasa_no_base_cfg
 import os
+from pathlib import Path
+
+
+def _find_counterfactual_root() -> Path:
+    env = os.environ.get("COUNTERFACTUAL_ROOT")
+    if env:
+        return Path(env)
+    start = Path(__file__).resolve().parent
+    for ancestor in [start] + list(start.parents):
+        if (ancestor / ".git").is_dir() and (ancestor / "robust_wam").is_dir():
+            return ancestor
+    raise RuntimeError("Cannot find counterfactual project root. Set COUNTERFACTUAL_ROOT.")
+
+
+_CF_ROOT = _find_counterfactual_root()
 
 va_robocasa_no_base_train_cfg = EasyDict(__name__='Config: VA robocasa no base train')
 va_robocasa_no_base_train_cfg.update(va_robocasa_no_base_cfg)
 
-va_robocasa_no_base_train_cfg.dataset_path = '/data1/liu/exp/robocasa/datasets/training_no_base/atomic'
+va_robocasa_no_base_train_cfg.dataset_path = os.environ.get(
+    "ROBOCASA_DATASET_PATH",
+    str(_CF_ROOT.parent / "robocasa" / "datasets" / "training_no_base" / "atomic"),
+)
 va_robocasa_no_base_train_cfg.empty_emb_path = os.path.join(
     va_robocasa_no_base_train_cfg.dataset_path, 'empty_emb.pt'
 )

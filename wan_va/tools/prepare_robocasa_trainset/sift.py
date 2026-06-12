@@ -1,6 +1,7 @@
 import argparse
 import csv
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -8,9 +9,26 @@ import numpy as np
 import pandas as pd
 
 
-DEFAULT_SOURCE_ROOT = Path("/data1/liu/exp/robocasa/datasets/v1.0/pretrain/atomic")
-DEFAULT_OUTPUT_ROOT = Path("/data1/liu/exp/robocasa/datasets/training_no_base/atomic")
-DEFAULT_FLAGS_CSV = Path("/data1/liu/exp/robocasa_base_motion_episode_flags.csv")
+def _find_counterfactual_root() -> Path:
+    env = os.environ.get("COUNTERFACTUAL_ROOT")
+    if env:
+        return Path(env)
+    start = Path(__file__).resolve().parent
+    for ancestor in [start] + list(start.parents):
+        if (ancestor / ".git").is_dir() and (ancestor / "robust_wam").is_dir():
+            return ancestor
+    raise RuntimeError("Cannot find counterfactual project root. Set COUNTERFACTUAL_ROOT.")
+
+
+_CF_ROOT = _find_counterfactual_root()
+_EXP_ROOT = _CF_ROOT.parent
+
+_SRC = os.environ.get("ROBOCASA_DATASET_PATH")
+DEFAULT_SOURCE_ROOT = Path(_SRC) if _SRC else (_EXP_ROOT / "robocasa" / "datasets" / "v1.0" / "pretrain" / "atomic")
+_OUT = os.environ.get("ROBOCASA_OUTPUT_DATASET_PATH")
+DEFAULT_OUTPUT_ROOT = Path(_OUT) if _OUT else (_EXP_ROOT / "robocasa" / "datasets" / "training_no_base" / "atomic")
+_FLAGS = os.environ.get("ROBOCASA_FLAGS_CSV")
+DEFAULT_FLAGS_CSV = Path(_FLAGS) if _FLAGS else (_EXP_ROOT / "robocasa_base_motion_episode_flags.csv")
 
 
 def parse_args():

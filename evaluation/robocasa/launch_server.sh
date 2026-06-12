@@ -3,6 +3,7 @@ set -e
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 LINGBOT_VA_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
+COUNTERFACTUAL_ROOT=${COUNTERFACTUAL_ROOT:-$(cd "$LINGBOT_VA_ROOT/../.." && pwd)}
 cd "$LINGBOT_VA_ROOT"
 export PYTHONPATH="$LINGBOT_VA_ROOT:${PYTHONPATH:-}"
 
@@ -10,7 +11,7 @@ START_PORT=${START_PORT:-$((29056))}
 MASTER_PORT=${MASTER_PORT:-29063}
 NGPU=${NGPU:-4}
 SAVE_ROOT=${SAVE_ROOT:-visualization/robocasa}
-MODEL_ROOT=${MODEL_ROOT:-~/exp/checkpoints/lingbot-va-posttrain-libero-long}
+MODEL_ROOT=${MODEL_ROOT:-${COUNTERFACTUAL_ROOT}/checkpoints/lingbot-va-posttrain-libero-long}
 TASK_REGISTRY_JSON=${TASK_REGISTRY_JSON:-evaluation/robocasa/task_mobility_groups.json}
 TASK_GROUP=${TASK_GROUP:-guaranteed_no_base_motion}
 ROBOCASA_ACTION_MODE=${ROBOCASA_ACTION_MODE:-no_base}
