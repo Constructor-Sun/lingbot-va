@@ -2,4 +2,5 @@ checkpoints/
 outputs/
 visualization/
 wandb/
+logs/
 *.pyc

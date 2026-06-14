@@ -1,5 +1,6 @@
 #!/bin/bash
 export LD_LIBRARY_PATH=/usr/lib64:/usr/lib:$LD_LIBRARY_PATH
+export ROBOTWIN_CAMERA_SHADER_DIR="default"
 
 
 save_root=${1:-'./results'}
@@ -9,12 +10,24 @@ policy_name=ACT
 task_config=demo_clean
 train_config_name=0
 model_name=0
-seed=${3:-0}
-test_num=${4:-100}
-start_port=29556 
-num_gpus=8
+gpu_offset=${3:-0}
+seed=${4:-0}
+test_num=${5:-40}
+start_port=29556
+num_gpus=4
+run_tag=${6:-"gpu${gpu_offset}-$((gpu_offset + num_gpus - 1))"}
 
 task_list_id=${2:-0}
+
+# task_groups=(
+#   "stack_bowls_three handover_block hanging_mug scan_object lift_pot put_object_cabinet stack_blocks_three place_shoe"
+#   "adjust_bottle place_mouse_pad dump_bin_bigbin move_pillbottle_pad pick_dual_bottles shake_bottle place_fan turn_switch"
+#   "shake_bottle_horizontally place_container_plate rotate_qrcode place_object_stand put_bottles_dustbin move_stapler_pad place_burger_fries place_bread_basket"
+#   "pick_diverse_bottles open_microwave beat_block_hammer press_stapler click_bell move_playingcard_away open_laptop move_can_pot"
+#   "stack_bowls_two place_a2b_right stamp_seal place_object_basket handover_mic place_bread_skillet stack_blocks_two place_cans_plasticbox"
+#   "click_alarmclock blocks_ranking_size place_phone_stand place_can_basket place_object_scale place_a2b_left grab_roller place_dual_shoes"
+#   "place_empty_cup blocks_ranking_rgb place_empty_cup blocks_ranking_rgb place_empty_cup blocks_ranking_rgb place_empty_cup blocks_ranking_rgb"
+# )
 
 task_groups=(
   "stack_bowls_three handover_block hanging_mug scan_object lift_pot put_object_cabinet stack_blocks_three place_shoe"
@@ -24,6 +37,7 @@ task_groups=(
   "stack_bowls_two place_a2b_right stamp_seal place_object_basket handover_mic place_bread_skillet stack_blocks_two place_cans_plasticbox"
   "click_alarmclock blocks_ranking_size place_phone_stand place_can_basket place_object_scale place_a2b_left grab_roller place_dual_shoes"
   "place_empty_cup blocks_ranking_rgb place_empty_cup blocks_ranking_rgb place_empty_cup blocks_ranking_rgb place_empty_cup blocks_ranking_rgb"
+  "adjust_bottle rotate_qrcode open_microwave stamp_seal"
 )
 
 if (( task_list_id < 0 || task_list_id >= ${#task_groups[@]} )); then
@@ -39,21 +53,21 @@ printf 'task_names (%d): %s\n' "${#task_names[@]}" "${task_names[*]}"
 log_dir="./logs"
 mkdir -p "$log_dir"
 
-echo -e "\033[32mLaunching ${#task_names[@]} tasks. GPUs assigned by mod ${num_gpus}, ports starting from ${start_port} incrementing.\033[0m"
+echo -e "\033[32mLaunching ${#task_names[@]} tasks. GPUs ${gpu_offset}-$((gpu_offset + num_gpus - 1)), ports starting from ${start_port} incrementing.\033[0m"
 
-pid_file="pids.txt"
+pid_file="pids_${run_tag}.txt"
 > "$pid_file"
 
 batch_time=$(date +%Y%m%d_%H%M%S)
 
 for i in "${!task_names[@]}"; do
     task_name="${task_names[$i]}"
-    gpu_id=$(( i % num_gpus ))
-    port=$(( start_port + i ))
+    gpu_id=$(( i % num_gpus + gpu_offset ))
+    port=$(( start_port + i + gpu_offset ))
 
     export CUDA_VISIBLE_DEVICES=${gpu_id}
 
-    log_file="${log_dir}/${task_name}_${batch_time}.log"
+    log_file="${log_dir}/${task_name}_${run_tag}_${batch_time}.log"
 
     echo -e "\033[33m[Task $i] Task: ${task_name}, GPU: ${gpu_id}, PORT: ${port}, Log: ${log_file}\033[0m"
 
