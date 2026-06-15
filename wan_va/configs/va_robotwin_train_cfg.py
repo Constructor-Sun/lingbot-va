@@ -21,14 +21,18 @@ _CF_ROOT = _find_counterfactual_root()
 va_robotwin_train_cfg = EasyDict(__name__='Config: VA robotwin train')
 va_robotwin_train_cfg.update(va_robotwin_cfg)
 
+va_robotwin_train_cfg.wan22_pretrained_model_name_or_path = os.environ.get(
+    "LINGBOT_CHECKPOINT_PATH",
+    str(_CF_ROOT / "checkpoints" / "lingbot-va-base"),
+)
 va_robotwin_train_cfg.dataset_path = os.environ.get(
     "LINGBOT_DATASET_PATH",
-    str(_CF_ROOT / "robust_wam" / "data" / "data_w_mask_clean_large_le320"),
+    str(_CF_ROOT / "robust_wam" / "data" / "data_w_mask_clean_object_robot_fps12_le320"),
 )
 va_robotwin_train_cfg.empty_emb_path = os.path.join(va_robotwin_train_cfg.dataset_path, 'empty_emb.pt')
 va_robotwin_train_cfg.enable_wandb = True
 va_robotwin_train_cfg.load_worker = 16
-va_robotwin_train_cfg.save_interval = 200
+va_robotwin_train_cfg.save_interval = 320 # 40
 va_robotwin_train_cfg.gc_interval = 50
 va_robotwin_train_cfg.cfg_prob = 0.1
 
@@ -39,8 +43,8 @@ va_robotwin_train_cfg.beta2 = 0.95
 va_robotwin_train_cfg.weight_decay = 0.1
 va_robotwin_train_cfg.warmup_steps = 10
 va_robotwin_train_cfg.batch_size = 1 
-va_robotwin_train_cfg.gradient_accumulation_steps = 1
-va_robotwin_train_cfg.num_steps = 5000
+va_robotwin_train_cfg.gradient_accumulation_steps = 1 # 8
+va_robotwin_train_cfg.num_steps = 3200 # 400
 
 # Object Future Prediction
 va_robotwin_train_cfg.enable_object_pred = False

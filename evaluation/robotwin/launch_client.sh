@@ -12,15 +12,15 @@ task_groups=(
 )
 
 save_root=${1:-'./results'}
-task_name=${2:-"open_microwave"}
+task_name=${2:-"place_dual_shoes"}
 
 policy_name=ACT
-# task_config=demo_camera
-task_config=demo_clean
+task_config=demo_camera
+# task_config=demo_clean
 train_config_name=0
 model_name=0
 seed=0
-PORT=29165
+PORT=29169
 
 PYTHONWARNINGS=ignore::UserWarning \
 XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 python -m evaluation.robotwin.eval_polict_client_openpi --config policy/$policy_name/deploy_policy.yml \

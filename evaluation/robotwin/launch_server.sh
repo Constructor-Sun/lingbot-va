@@ -1,6 +1,6 @@
-START_PORT=${START_PORT:-29165}
-MASTER_PORT=${MASTER_PORT:-29175}
-GPU_ID=${GPU_ID:-4}
+START_PORT=${START_PORT:-29169}
+MASTER_PORT=${MASTER_PORT:-29179}
+GPU_ID=${GPU_ID:-5}
 
 save_root='visualization/'
 mkdir -p $save_root

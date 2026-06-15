@@ -24,7 +24,7 @@ va_robotwin_cfg.update(va_shared_cfg)
 
 va_robotwin_cfg.wan22_pretrained_model_name_or_path = os.environ.get(
     "LINGBOT_CHECKPOINT_PATH",
-    str(_CF_ROOT / "checkpoints" / "robot_mask_weight_5"), # robot_sft
+    str(_CF_ROOT / "checkpoints" / "lingbot-va-base"), # robot_sft, robot_mask_weight_5
 )
 
 va_robotwin_cfg.attn_window = 72
@@ -34,7 +34,7 @@ va_robotwin_cfg.env_type = 'robotwin_tshape'
 va_robotwin_cfg.height = 256
 va_robotwin_cfg.width = 320
 va_robotwin_cfg.action_dim = 30
-va_robotwin_cfg.action_per_frame = 16
+va_robotwin_cfg.action_per_frame = 20 # 16
 va_robotwin_cfg.obs_cam_keys = [
     'observation.images.cam_high', 'observation.images.cam_left_wrist',
     'observation.images.cam_right_wrist'

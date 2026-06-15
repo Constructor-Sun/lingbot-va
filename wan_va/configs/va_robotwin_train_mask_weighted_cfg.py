@@ -10,4 +10,4 @@ va_robotwin_train_mask_weighted_cfg.__name__ = (
 
 va_robotwin_train_mask_weighted_cfg.enable_object_pred = False
 va_robotwin_train_mask_weighted_cfg.enable_mask_weighted_loss = True
-va_robotwin_train_mask_weighted_cfg.mask_foreground_weight = 10.0
+va_robotwin_train_mask_weighted_cfg.mask_foreground_weight = 5.0
