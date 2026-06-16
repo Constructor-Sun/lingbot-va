@@ -24,7 +24,7 @@ va_robotwin_cfg.update(va_shared_cfg)
 
 va_robotwin_cfg.wan22_pretrained_model_name_or_path = os.environ.get(
     "LINGBOT_CHECKPOINT_PATH",
-    str(_CF_ROOT / "checkpoints" / "lingbot-va-base"), # robot_sft, robot_mask_weight_5
+    str(_CF_ROOT / "checkpoints" / "robot_sft"), # robot_sft, robot_mask_weight_5
 )
 
 va_robotwin_cfg.attn_window = 72

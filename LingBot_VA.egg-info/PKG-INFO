@@ -1,4 +1,4 @@
-Metadata-Version: 2.1
+Metadata-Version: 2.4
 Name: LingBot_VA
 Version: 0.0.0
 Summary: LingBot-VA: A Pragmatic VA Foundation Model
@@ -231,6 +231,7 @@ Requires-Dist: flake8; extra == "dev"
 Requires-Dist: isort; extra == "dev"
 Requires-Dist: mypy; extra == "dev"
 Requires-Dist: huggingface-hub[cli]; extra == "dev"
+Dynamic: license-file
 
 <h1 align="center">LingBot-VA: Causal World Modeling for Robot Control</h1>
 

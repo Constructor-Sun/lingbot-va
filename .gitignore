@@ -4,3 +4,4 @@ visualization/
 wandb/
 logs/
 *.pyc
+*.txt

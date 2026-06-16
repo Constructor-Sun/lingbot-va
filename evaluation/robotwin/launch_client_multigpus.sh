@@ -7,14 +7,15 @@ save_root=${1:-'./results'}
 
 # General parameters
 policy_name=ACT
-task_config=demo_clean
+# task_config=demo_clean
+task_config=demo_camera
 train_config_name=0
 model_name=0
 gpu_offset=${3:-0}
 seed=${4:-0}
 test_num=${5:-40}
 start_port=29556
-num_gpus=4
+num_gpus=2
 run_tag=${6:-"gpu${gpu_offset}-$((gpu_offset + num_gpus - 1))"}
 
 task_list_id=${2:-0}
@@ -37,7 +38,7 @@ task_groups=(
   "stack_bowls_two place_a2b_right stamp_seal place_object_basket handover_mic place_bread_skillet stack_blocks_two place_cans_plasticbox"
   "click_alarmclock blocks_ranking_size place_phone_stand place_can_basket place_object_scale place_a2b_left grab_roller place_dual_shoes"
   "place_empty_cup blocks_ranking_rgb place_empty_cup blocks_ranking_rgb place_empty_cup blocks_ranking_rgb place_empty_cup blocks_ranking_rgb"
-  "adjust_bottle rotate_qrcode open_microwave stamp_seal"
+  "adjust_bottle click_alarmclock" # open_microwave rotate_qrcode
 )
 
 if (( task_list_id < 0 || task_list_id >= ${#task_groups[@]} )); then

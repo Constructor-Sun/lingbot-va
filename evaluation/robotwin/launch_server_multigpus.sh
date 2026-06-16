@@ -10,7 +10,7 @@ mkdir -p $save_root
 batch_time=$(date +%Y%m%d_%H%M%S)
 
 
-num_gpus=4
+num_gpus=2
 for i in $(seq 0 $((num_gpus - 1))); do
     gpu_id=$(( i + GPU_OFFSET ))
     CURRENT_PORT=$((START_PORT + i))
