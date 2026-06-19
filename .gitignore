@@ -1,6 +1,8 @@
 checkpoints/
 outputs/
 visualization/
+visualization_attn/
+results_attn/
 wandb/
 logs/
 *.pyc
