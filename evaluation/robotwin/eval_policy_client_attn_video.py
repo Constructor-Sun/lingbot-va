@@ -113,6 +113,76 @@ def _overlay_heatmap_on_image(img_rgb, heatmap01, alpha=0.5):
     return np.clip(out, 0, 255).astype(np.uint8)
 
 
+def save_token_cas_outputs(ret, obs, out_dir):
+    cas = ret.get("cas")
+    if not cas or "grid" not in cas:
+        return
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    np.save(out_dir / "action.npy", ret["action"])
+    np.save(out_dir / "cas_grid.npy", cas["grid"])
+    for key in ("scores", "token_indices"):
+        if key in cas:
+            np.save(out_dir / f"cas_{key}.npy", cas[key])
+    score_values = np.asarray(cas.get("scores", []), dtype=np.float32)
+    meta = {
+        "mode": cas.get("mode"),
+        "per_token": cas.get("per_token"),
+        "score_type": cas.get("score_type"),
+        "n_scores": int(score_values.size),
+    }
+    if score_values.size:
+        meta.update({
+            "score_min": float(np.nanmin(score_values)),
+            "score_max": float(np.nanmax(score_values)),
+            "score_mean": float(np.nanmean(score_values)),
+            "score_std": float(np.nanstd(score_values)),
+        })
+    for key in ("block_size", "n_blocks"):
+        if key in cas:
+            meta[key] = cas[key]
+    with open(out_dir / "cas_meta.json", "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2)
+    with open(out_dir / "cas_entries.json", "w", encoding="utf-8") as f:
+        json.dump(cas.get("entries", []), f, indent=2)
+
+    grid = np.asarray(cas["grid"], dtype=np.float32)
+    for cam_key, (rs, cs) in VIEW_SLICES.items():
+        cam_short = cam_key.split(".")[-1]
+        img = np.asarray(obs[cam_key])
+        if img.dtype != np.uint8:
+            img = np.clip(img, 0, 255).astype(np.uint8)
+        imageio.imwrite(out_dir / f"observation_{cam_short}.png", img)
+
+        view = grid[:, rs, cs]
+        valid = np.isfinite(view)
+        count = valid.sum(axis=0)
+        view2d = np.divide(np.where(valid, view, 0).sum(axis=0),
+                           np.maximum(count, 1), where=count > 0)
+        view2d[count == 0] = 0
+        heat01 = _normalize_map(view2d)
+        heat_u8 = (cv2.resize(heat01, (img.shape[1], img.shape[0])) * 255).astype(np.uint8)
+        heat_rgb = cv2.cvtColor(cv2.applyColorMap(heat_u8, cv2.COLORMAP_JET), cv2.COLOR_BGR2RGB)
+        imageio.imwrite(out_dir / f"cas_map_{cam_short}.png", heat_rgb)
+        imageio.imwrite(out_dir / f"cas_overlay_{cam_short}.png",
+                        _overlay_heatmap_on_image(img, heat01))
+
+
+def token_cas_request(args):
+    if not args.get("token_cas", True):
+        return {}
+    req = {
+        "cas_enabled": True,
+        "cas_mode": args.get("cas_mode", "gradient"),
+        "cas_per_token": True,
+        "cas_mean_scope": args.get("cas_mean_scope", "same_camera"),
+        "cas_show_progress": args.get("cas_show_progress", True),
+    }
+    if args.get("cas_max_tokens") is not None:
+        req["cas_max_tokens"] = args["cas_max_tokens"]
+    return req
+
+
 # ---------------------------------------------------------------------------
 # Original utility functions (unchanged)
 # ---------------------------------------------------------------------------
@@ -312,8 +382,9 @@ def save_comparison_video_attn(real_obs_list, chunk_obs_registry, all_saliency_c
     if not real_obs_list:
         return
 
+    include_generated = bool(imagined_video)
     generated_by_chunk_frame = {}
-    if imagined_video:
+    if include_generated:
         n_imagined = sum(len(video) for video in imagined_video)
         for chunk_idx, video in enumerate(imagined_video):
             for frame_idx in range(len(video)):
@@ -395,24 +466,25 @@ def save_comparison_video_attn(real_obs_list, chunk_obs_registry, all_saliency_c
         target_width = row_real.shape[1]
 
         # --- Middle row: generated / imagined video ---
-        if i in frame_generated:
-            img_frame = frame_generated[i]
-            if img_frame.dtype != np.uint8 and img_frame.max() <= 1.0001:
-                img_frame = (img_frame * 255).astype(np.uint8)
-            elif img_frame.dtype != np.uint8:
-                img_frame = img_frame.astype(np.uint8)
+        if include_generated:
+            if i in frame_generated:
+                img_frame = frame_generated[i]
+                if img_frame.dtype != np.uint8 and img_frame.max() <= 1.0001:
+                    img_frame = (img_frame * 255).astype(np.uint8)
+                elif img_frame.dtype != np.uint8:
+                    img_frame = img_frame.astype(np.uint8)
 
-            row_imagined = generated_tshape_to_row(img_frame)
-            if row_imagined.shape[1] != target_width:
-                row_imagined = cv2.resize(row_imagined, (target_width, base_h))
-        else:
-            row_imagined = np.zeros((base_h, target_width, 3), dtype=np.uint8)
-            cv2.putText(row_imagined, "No generated video",
-                        (target_width // 2 - 140, max(30, base_h // 2)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (100, 100, 100), 2)
+                row_imagined = generated_tshape_to_row(img_frame)
+                if row_imagined.shape[1] != target_width:
+                    row_imagined = cv2.resize(row_imagined, (target_width, base_h))
+            else:
+                row_imagined = np.zeros((base_h, target_width, 3), dtype=np.uint8)
+                cv2.putText(row_imagined, "No generated video",
+                            (target_width // 2 - 140, max(30, base_h // 2)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (100, 100, 100), 2)
 
-        row_imagined = np.ascontiguousarray(row_imagined)
-        row_imagined = add_title_bar(row_imagined, "Generated Video Stream")
+            row_imagined = np.ascontiguousarray(row_imagined)
+            row_imagined = add_title_bar(row_imagined, "Generated Video Stream")
 
         # --- Bottom row: saliency overlay on observations ---
         if i in frame_saliency:
@@ -438,7 +510,11 @@ def save_comparison_video_attn(real_obs_list, chunk_obs_registry, all_saliency_c
             row_sal = add_title_bar(row_sal, "Attention Saliency")
 
         row_sal = np.ascontiguousarray(row_sal)
-        full_frame = np.vstack([row_real, row_imagined, row_sal])
+        rows = [row_real]
+        if include_generated:
+            rows.append(row_imagined)
+        rows.append(row_sal)
+        full_frame = np.vstack(rows)
         full_frame = np.ascontiguousarray(full_frame)
         final_frames.append(full_frame)
 
@@ -508,6 +584,9 @@ def main(usr_args):
     args["task_config"] = task_config
     args["ckpt_setting"] = ckpt_setting
     args["save_root"] = save_root
+    for key in ("token_cas", "cas_mode", "cas_mean_scope", "cas_max_tokens",
+                "cas_show_progress", "cas_first_chunk_only", "return_video"):
+        args[key] = usr_args.get(key)
 
     # Enable actor segmentation for mask export
     if args.get("data_type") is None:
@@ -790,11 +869,20 @@ def eval_policy(task_name,
                 observation = TASK_ENV.get_obs()
                 first_obs = format_obs(observation, prompt)
 
-            ret = model.infer(dict(obs=first_obs, prompt=prompt,
-                                   save_visualization=save_visualization,
-                                   video_guidance_scale=video_guidance_scale,
-                                   action_guidance_scale=action_guidance_scale,
-                                   return_video=True))
+            action_req = dict(obs=first_obs, prompt=prompt,
+                              save_visualization=save_visualization,
+                              video_guidance_scale=video_guidance_scale,
+                              action_guidance_scale=action_guidance_scale,
+                              return_video=args.get("return_video", False))
+            action_req.update(token_cas_request(args))
+            cas_obs = full_obs_list[-1]
+            ret = model.infer(action_req)
+            save_token_cas_outputs(
+                ret, cas_obs,
+                Path(args['save_root']) / ep_name / "cas" / f"chunk_{chunk_idx:03d}",
+            )
+            if args.get("cas_first_chunk_only", False):
+                break
             action = ret['action']
             if 'video' in ret:
                 imagined_video = ret['video']
@@ -1022,13 +1110,26 @@ def eval_policy(task_name,
 
 def parse_args_and_config():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, required=True)
+    parser.add_argument("--config", type=str, default="policy/ACT/deploy_policy.yml")
     parser.add_argument("--overrides", nargs=argparse.REMAINDER)
-    parser.add_argument("--port", type=int, default=8000, help='remote policy socket port.')
-    parser.add_argument("--save_root", type=str, default="results/default_vis_path")
+    parser.add_argument("--task_name", type=str, default=None)
+    parser.add_argument("--task_config", type=str, default="demo_clean")
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--port", type=int, default=29169, help='remote policy socket port.')
+    parser.add_argument("--save_root", type=str, default="results/token_cas")
     parser.add_argument("--video_guidance_scale", type=float, default=5.0)
-    parser.add_argument("--action_guidance_scale", type=float, default=5.0)
-    parser.add_argument("--test_num", type=int, default=100)
+    parser.add_argument("--action_guidance_scale", type=float, default=1.0)
+    parser.add_argument("--test_num", type=int, default=1)
+    parser.add_argument("--return_video", action="store_true",
+                        help="Decode and return generated video frames for visualization.")
+    parser.add_argument("--no_token_cas", dest="token_cas", action="store_false")
+    parser.add_argument("--cas_mode", choices=["gradient", "block", "zero", "mean"], default="gradient")
+    parser.add_argument("--cas_mean_scope", choices=["same_camera", "same_frame", "global"],
+                        default="same_camera")
+    parser.add_argument("--cas_max_tokens", type=int, default=None)
+    parser.add_argument("--no_cas_progress", dest="cas_show_progress", action="store_false")
+    parser.add_argument("--cas_first_chunk_only", action="store_true")
+    parser.set_defaults(token_cas=True, cas_show_progress=True, cas_first_chunk_only=False)
     args = parser.parse_args()
 
     with open(args.config, "r", encoding="utf-8") as f:
@@ -1047,9 +1148,19 @@ def parse_args_and_config():
             override_dict[key] = value
         return override_dict
 
+    for k, v in vars(args).items():
+        if k != "overrides" and v is not None:
+            config[k] = v
     if args.overrides:
-        overrides = parse_override_pairs(args.overrides)
-        config.update(overrides)
+        config.update(parse_override_pairs(args.overrides))
+    config["task_config"] = str(config["task_config"]).removesuffix(".yml")
+    config.setdefault("policy_name", "ACT")
+    config.setdefault("train_config_name", "0")
+    config.setdefault("model_name", "0")
+    if config.get("ckpt_setting") is None:
+        config["ckpt_setting"] = str(config.get("model_name", "0"))
+    if not config.get("task_name"):
+        raise ValueError("Please set --task_name, e.g. --task_name click_alarmclock")
 
     return config
 
